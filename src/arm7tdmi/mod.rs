@@ -130,19 +130,19 @@ impl Cpu {
 
         let instr = self.pipeline_instrs[0];
 
-        // let regs = self
-        //     .reg
-        //     .r
-        //     .iter()
-        //     .copied()
-        //     .map(|x| format!("{x:0x}"))
-        //     .collect::<Vec<_>>()
-        //     .join(", ");
-        // println!(
-        //     "{:08x}: {instr:08x}, r: [{regs}], cpsr: {:08x}",
-        //     self.reg.r[PC_INDEX],
-        //     self.reg.cpsr.bits()
-        // );
+        //         let regs = self
+        //             .reg
+        //             .r
+        //             .iter()
+        //             .copied()
+        //             .map(|x| format!("{x:0x}"))
+        //             .collect::<Vec<_>>()
+        //             .join(", ");
+        //         println!(
+        //             "{:08x}: {instr:08x}, r: [{regs}], cpsr: {:08x}",
+        //             self.reg.r[PC_INDEX],
+        //             self.reg.cpsr.bits()
+        //         );
 
         match self.reg.cpsr.state {
             OperationState::Arm => self.execute_arm(bus, instr),
@@ -155,11 +155,7 @@ impl Cpu {
     }
 
     fn step_pipeline(&mut self, bus: &mut impl Bus) {
-        self.reg.r[PC_INDEX] &= match self.reg.cpsr.state {
-            OperationState::Thumb => !1,
-            OperationState::Arm => !0b11,
-        };
-
+        self.reg.align_pc();
         self.pipeline_instrs[0] = self.pipeline_instrs[1];
         self.pipeline_instrs[1] = match self.reg.cpsr.state {
             OperationState::Thumb => bus.read_hword(self.reg.r[PC_INDEX]).into(),
@@ -168,15 +164,14 @@ impl Cpu {
 
         let instr_size = self.reg.cpsr.state.instr_size();
         self.reg.r[PC_INDEX] = self.reg.r[PC_INDEX].wrapping_add(instr_size);
+        bus.prefetch_instr(self.reg.r[PC_INDEX]);
     }
 
     /// Forcibly aligns the PC and flushes the instruction pipeline, then fetches the next
     /// instruction at the PC, then advances the PC by one instruction.
-    ///
-    /// NOTE: The next instruction in the pipeline will be 0, as it is expected that
-    /// `step_pipeline()` will be called before getting the next instruction from the pipeline.
     fn reload_pipeline(&mut self, bus: &mut impl Bus) {
-        self.pipeline_instrs[0] = 0;
+        self.reg.align_pc();
+        bus.prefetch_instr(self.reg.r[PC_INDEX]);
         self.step_pipeline(bus);
     }
 
@@ -188,8 +183,11 @@ impl Cpu {
         if (self.reg.cpsr.irq_disabled && exception == Exception::Interrupt)
             || (self.reg.cpsr.fiq_disabled && exception == Exception::FastInterrupt)
         {
+            println!("{:?} ignored", exception);
             return false;
         }
+
+        println!("{:?}", exception);
 
         let old_cpsr = self.reg.cpsr;
         self.reg.change_mode(exception.entry_mode());
@@ -198,7 +196,8 @@ impl Cpu {
         self.reg.cpsr.state = OperationState::Arm;
 
         self.reg.spsr = old_cpsr.bits();
-        self.reg.r[LR_INDEX] = self.reg.r[PC_INDEX].wrapping_sub(self.reg.cpsr.state.instr_size());
+        let instr_size = self.reg.cpsr.state.instr_size();
+        self.reg.r[LR_INDEX] = self.reg.r[PC_INDEX].wrapping_sub(instr_size);
         self.reg.r[PC_INDEX] = exception.vector_addr();
         self.reload_pipeline(bus);
 
@@ -209,7 +208,9 @@ impl Cpu {
 #[cfg(test)]
 mod tests {
     use super::*;
+
     use crate::bus::tests::{NullBus, VecBus};
+
     use strum::IntoEnumIterator;
 
     fn assert_exception_result(cpu: &mut Cpu, exception: Exception, old_reg: Registers) {

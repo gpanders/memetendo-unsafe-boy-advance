@@ -36,6 +36,8 @@ pub trait Bus {
         self.write_hword(addr, value as u16);
         self.write_hword(addr.wrapping_add(2), value.bits(16..) as _);
     }
+
+    fn prefetch_instr(&mut self, _addr: u32) {}
 }
 
 impl Bus for &[u8] {
